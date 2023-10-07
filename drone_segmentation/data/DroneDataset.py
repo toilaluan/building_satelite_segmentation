@@ -1,4 +1,4 @@
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from glob import glob
 import cv2
@@ -6,20 +6,22 @@ import os
 import torch
 import albumentations as A
 import timm
+import numpy as np
 import torchvision.transforms as T
 
 class DroneDataset(Dataset):
-    def __init__(self, root_folder: str, img_size: tuple, is_training: bool):
+    def __init__(self, root_folder: str, img_size: tuple, is_training: bool, context_img_size : tuple = None):
         self.img_size = img_size
         self.is_training = is_training
         self.image_dir = os.path.join(root_folder, "image")
         self.mask_dir = os.path.join(root_folder, "mask")
         self.image_paths = glob(self.image_dir + "/*.png")
+        self.context_img_size = context_img_size
         self.select_big = A.Compose(
             [
                 A.RandomResizedCrop(
-                    height=img_size[0]*4,
-                    width=img_size[1]*4,
+                    height=img_size[0]*2,
+                    width=img_size[1]*2,
                     scale=(0.5, 1),
                     ratio=(0.9, 1.1),
                     always_apply=True,
@@ -39,23 +41,27 @@ class DroneDataset(Dataset):
         return cv2.resize(img, size, interpolation=cv2.INTER_NEAREST)
     def __getitem__(self, index):
         img_path = self.image_paths[index]
-        mask_name = img_path.split("/")[-1].replace("Ortho", "Mask")
+        mask_name = img_path.split("/")[-1]
         mask_path = os.path.join(self.mask_dir, mask_name)
 
         img = cv2.imread(img_path)
         mask = cv2.imread(mask_path, 0)
+        big_selection = self.select_big(image=img, mask=mask)
+        big_image = big_selection['image']
+        big_mask = big_selection['mask']
         
-        if self.is_training:
-            augmented = self.augment(image=img, mask=mask)
-            img = augmented["image"]
-            mask = augmented["mask"]
-        else:
-            img = self.resize(img, self.img_size)
-            mask = self.resize(mask, self.img_size)
-        mask = mask > 0
-        img = Image.fromarray(img)
+        small_selection = self.select_small(image=big_image, mask=big_mask)
+        small_image = small_selection['image']
+        small_mask = small_selection['mask']
+                                      
+        small_mask = (small_mask > 0).astype(np.uint8)
+        small_mask = self.resize(small_mask, self.img_size) 
+        big_image = self.resize(big_image, self.context_img_size)
+        big_image = Image.fromarray(big_image)
         
-        return img, mask
+        small_image = Image.fromarray(small_image)
+        
+        return big_image, small_image, small_mask
     
 
 class Collator(object):
@@ -67,22 +73,27 @@ class Collator(object):
         os.makedirs('debug', exist_ok=True)
         
     def __call__(self, batch):
-        imgs = []
+        big_imgs = []
+        small_imgs = []
         masks = []
-        for img, mask in batch:
-            imgs.append(img)
+        for big_image, small_image, mask in batch:
+            big_imgs.append(big_image)
+            small_imgs.append(small_image)
             masks.append(mask)
         if not self.visualized:
-            for i, (img, mask) in enumerate(zip(imgs, masks)):
-                img.save(os.path.join(self.visualize_dir, f"img_{i}.jpg"))
+            for i, (big_img, small_img, mask) in enumerate(zip(big_imgs, small_imgs, masks)):
+                big_img.save(os.path.join(self.visualize_dir, f"big_img_{i}.jpg"))
+                small_img.save(os.path.join(self.visualize_dir, f"small_img_{i}.jpg"))
                 cv2.imwrite(os.path.join(self.visualize_dir, f"mask_{i}.png"), mask*255)
             self.visualized = True
-        imgs = [self.transform(img) for img in imgs]
+        big_imgs = [self.transform(img) for img in big_imgs]
+        small_imgs = [self.transform(img) for img in small_imgs]
         masks = [torch.FloatTensor(mask).unsqueeze(0) for mask in masks]
-        imgs = torch.stack(imgs, dim=0)
+        big_images = torch.stack(big_imgs, dim=0)
+        small_images = torch.stack(small_imgs, dim=0)
         masks = torch.stack(masks, dim=0)
         
-        return imgs, masks
+        return big_images, small_images, masks
     
     
 def get_transform(backbone_name):
@@ -97,5 +108,8 @@ def get_transform(backbone_name):
     return transform
 
 if __name__ == '__main__':
-    ds = DroneDataset('/mnt/data/luantranthanh/seg_building/dataset/building_512_binary', (512,512), True)
+    ds = DroneDataset('/mnt/data/luantranthanh/pyramid_segmentation/prepare_data/dataset/train/', (512,512), True)
     print(ds[0])
+    transforms = get_transform('resnet50')
+    dl = DataLoader(ds, batch_size = 2, collate_fn = Collator(transforms))
+    print(next(iter(dl)))

@@ -37,8 +37,8 @@ def get_args():
     return args
 
 def prepare_data(cfg, args):
-    train_dataset = DroneDataset(cfg.data.root_folder, cfg.data.img_size, True)
-    val_dataset = DroneDataset(cfg.data.root_folder, cfg.data.img_size, False)
+    train_dataset = DroneDataset(cfg.data.train_root_folder, cfg.data.img_size, True, cfg.data.context_img_size)
+    val_dataset = DroneDataset(cfg.data.val_root_folder, cfg.data.img_size, False, cfg.data.context_img_size)
     print("Total Train Dataset:", len(train_dataset))
     print("Total Val Dataset:", len(val_dataset))
     transforms = get_transform(cfg.model.backbone_name)
@@ -56,6 +56,7 @@ if __name__ == '__main__':
         cfg = yaml.load(f, Loader=yaml.FullLoader)
         cfg = EasyDict(cfg)
         cfg.data.img_size = eval(cfg.data.img_size)
+        cfg.data.context_img_size = eval(cfg.data.context_img_size)
     task = Task.init(project_name='drone_segmentation', task_name=cfg.model.backbone_name)
     task.set_parameters(cfg)    
     train_dataloader, val_dataloader, transforms = prepare_data(cfg, args)

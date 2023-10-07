@@ -1,9 +1,17 @@
 data:
-    root_folder: 'dataset/1024_512'
+    train_root_folder: 'prepare_data/dataset/train'
+    val_root_folder: 'prepare_data/dataset/val'
     img_size: (512,512)
+    context_img_size: (518,518)
     test_folder: '/mnt/data/RasterMask_v11/test_images'
 model:
-    backbone_name: 'openmmlab/upernet-swin-tiny'
+    pretrained: True
+    backbone_name: 'timm/efficientnet_b3.ra2_in1k'
+    backbone_context_name: 'timm/vit_small_patch14_dinov2.lvd142m'
+    upernet_cfg:
+        pool_scales: [1,2,3,6]
+        num_labels: 1
+        hidden_size: 256
 training:
     lr: 0.0001
     weight_decay: 0.00001

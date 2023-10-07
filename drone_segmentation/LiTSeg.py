@@ -3,7 +3,7 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
-from drone_segmentation.model import UperNet, SegFormer, UperNet_HF
+from drone_segmentation.model import UperNet, SegFormer, UperNet_HF, ContextNet
 from torchmetrics import JaccardIndex
 import glob
 from PIL import Image
@@ -15,11 +15,13 @@ import os
 
 
 class LiTSeg(pl.LightningModule):
-    def __init__(self, cfg, total_steps, transforms):
+    def __init__(self, cfg, total_steps, transforms, context_net=True):
         super().__init__()
         self.cfg = cfg
         self.transforms = transforms
-        if "segformer" in cfg.model.backbone_name:
+        if context_net:
+            self.model = ContextNet(cfg.model.backbone_name, cfg.model.backbone_context_name, cfg.model.upernet_cfg, cfg.model.pretrained)
+        elif "segformer" in cfg.model.backbone_name:
             self.model = SegFormer(cfg.model.backbone_name)
         elif "upernet" in cfg.model.backbone_name:
             self.model = UperNet_HF(cfg.model.backbone_name)
@@ -29,22 +31,22 @@ class LiTSeg(pl.LightningModule):
         self.iou_calc = JaccardIndex('binary')
         self.save_hyperparameters()
     
-    def forward(self, x, use_interpolate=True):
+    def forward(self, x, context, use_interpolate=True):
         N, C, H, W = x.shape
-        logits = self.model(x)
+        logits = self.model(x, context)
         if use_interpolate:
             logits = F.interpolate(logits, (H, W), mode="bilinear", align_corners=False)
         return logits
     
     def training_step(self, batch, batch_id):
-        imgs, masks = batch
-        logits = self(imgs)
+        big_imgs, small_imgs, masks = batch
+        logits = self(small_imgs, big_imgs)
         loss = F.binary_cross_entropy_with_logits(logits, masks)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
     def validation_step(self, batch, batch_id):
-        imgs, masks = batch
-        logits = self(imgs)
+        big_imgs, small_imgs, masks = batch
+        logits = self(small_imgs, big_imgs)
         loss = F.binary_cross_entropy_with_logits(logits, masks)
         self.log("val_loss", loss, on_epoch=True, prog_bar=True)
         mask_prediction = logits.sigmoid()
@@ -54,19 +56,19 @@ class LiTSeg(pl.LightningModule):
         iou_score = self.iou_calc.compute()
         self.iou_calc.reset()
         self.log("val_iou", iou_score, on_epoch=True, prog_bar=True)
-        predict_masks, original_imgs, img_paths = self.predict_folder(self.cfg.data.test_folder)
-        for i, predict_mask in enumerate(predict_masks):
-            img_name = os.path.basename(img_paths[i])
-            original_img = original_imgs[i]
-            color = np.array([0, 255, 0], dtype="uint8")
-            masked_img = np.where(predict_mask[..., None], color, original_img)
-            colored_mask_img = cv2.addWeighted(original_img, 0.6, masked_img, 0.4, 0)
-            Logger.current_logger().report_image(
-                "Testing Image",
-                img_name,
-                iteration=self.trainer.current_epoch,
-                image=colored_mask_img,
-            )
+        # predict_masks, original_imgs, img_paths = self.predict_folder(self.cfg.data.test_folder)
+        # for i, predict_mask in enumerate(predict_masks):
+        #     img_name = os.path.basename(img_paths[i])
+        #     original_img = original_imgs[i]
+        #     color = np.array([0, 255, 0], dtype="uint8")
+        #     masked_img = np.where(predict_mask[..., None], color, original_img)
+        #     colored_mask_img = cv2.addWeighted(original_img, 0.6, masked_img, 0.4, 0)
+        #     Logger.current_logger().report_image(
+        #         "Testing Image",
+        #         img_name,
+        #         iteration=self.trainer.current_epoch,
+        #         image=colored_mask_img,
+        #     )
         
     def predict_a_image(self, image_path):
         img_name = os.path.basename(image_path)
